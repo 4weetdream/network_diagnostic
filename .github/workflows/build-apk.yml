@@ -1,4 +1,4 @@
-name: Build APK
+name: Build APK with Buildozer
 
 on:
   push:
@@ -34,7 +34,18 @@ jobs:
           pip install buildozer
 
       - name: Build APK with Buildozer
-        run: buildozer android debug
+        run: |
+          # 如果文件不存在，自动生成 buildozer.spec
+          if [ ! -f buildozer.spec ]; then
+            buildozer init
+            # 自动修改关键配置
+            sed -i 's/^title = .*/title = MyApp/' buildozer.spec
+            sed -i 's/^package.name = .*/package.name = myapp/' buildozer.spec
+            sed -i 's/^package.domain = .*/package.domain = org.example/' buildozer.spec
+            # 可选：根据你的项目修改更多配置
+            # sed -i 's/^requirements = .*/requirements = python3, kivy/' buildozer.spec
+          fi
+          buildozer android debug
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
