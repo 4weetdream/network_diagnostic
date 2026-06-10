@@ -7,67 +7,91 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
-      - name: Checkout code
+      - name: Checkout source code
         uses: actions/checkout@v4
 
-      - name: Setup Java
+      # 配置 Java 17
+      - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: 17
 
-      - name: Setup Python
+      # 配置 Python 3.10
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
           python-version: "3.10"
 
-      - name: Install system tools
+      # 系统依赖
+      - name: Install system packages
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -qq -y build-essential git unzip zip wget
+          sudo apt-get install -qq -y build-essential git unzip zip wget curl
 
-      - name: Install Python dependencies
+      # Python 依赖 + Buildozer
+      - name: Install Python & Buildozer
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools wheel
           pip install buildozer
 
-      # 手动安装 Android SDK 和 Build Tools，解决 aidl 找不到的问题
-      - name: Install Android SDK Build Tools
+      # 缓存 Buildozer/Android SDK（大幅减少重复下载）
+      - name: Cache Buildozer assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.buildozer
+          key: ${{ runner.os }}-buildozer-v1-${{ hashFiles('buildozer.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+
+      # 手动部署 Android SDK Commandline Tools + Build Tools（解决 aidl 缺失）
+      - name: Deploy Android SDK
         run: |
-          # 设置 Buildozer 工作目录
-          export BUILDOZER_DIR=$HOME/.buildozer
-          export ANDROID_SDK_ROOT=$BUILDOZER_DIR/android/platform/android-sdk
-          mkdir -p $ANDROID_SDK_ROOT
+          export SDK_ROOT="$HOME/.buildozer/android/platform/android-sdk"
+          mkdir -p "$SDK_ROOT"
+          cd "$SDK_ROOT"
 
-          # 下载 Android SDK Command Line Tools
-          wget https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip -O cmdline-tools.zip
-          unzip -q cmdline-tools.zip -d $ANDROID_SDK_ROOT
-          mv $ANDROID_SDK_ROOT/cmdline-tools $ANDROID_SDK_ROOT/cmdline-tools/latest
-          export PATH=$ANDROID_SDK_ROOT/cmdline-tools/latest/bin:$PATH
+          # 下载命令行工具
+          wget -q https://dl.google.com/android/repository/commandlinetools-linux-9477386_latest.zip
+          unzip -q commandlinetools-linux-9477386_latest.zip
 
-          # 接受许可证并安装 Build Tools（版本需与 buildozer.spec 中的 android.api 匹配）
+          # 修复目录结构（标准 Android cmdline-tools 布局）
+          mkdir -p cmdline-tools/latest
+          shopt -s dotglob
+          mv cmdline-tools/* cmdline-tools/latest/ || true
+          shopt -u dotglob
+
+          # 写入全局环境变量，后续步骤生效
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> $GITHUB_ENV
+          echo "$SDK_ROOT/cmdline-tools/latest/bin" >> $GITHUB_PATH
+
+          # 同意协议 + 安装编译工具链
           yes | sdkmanager --licenses
-          sdkmanager "build-tools;33.0.2" "platform-tools" "platforms;android-33"
+          sdkmanager --update
+          sdkmanager "platforms;android-33" "build-tools;33.0.2" "platform-tools"
 
-      - name: Build APK with Buildozer
+      # 生成/更新 buildozer.spec 并构建 APK
+      - name: Build Android APK
         run: |
-          # 如果文件不存在，自动生成 buildozer.spec
+          # 不存在则初始化配置文件
           if [ ! -f buildozer.spec ]; then
             buildozer init
-            # 自动修改关键配置
-            sed -i 's/^title = .*/title = MyApp/' buildozer.spec
-            sed -i 's/^package.name = .*/package.name = myapp/' buildozer.spec
-            sed -i 's/^package.domain = .*/package.domain = org.example/' buildozer.spec
-            # 设置与上面安装的 Build Tools 匹配的 API 版本
-            sed -i 's/^android.api = .*/android.api = 33/' buildozer.spec
-            sed -i 's/^android.ndk = .*/android.ndk = 25b/' buildozer.spec
+            # 批量修改核心配置
+            sed -i 's/^title =.*/title = MyApp/' buildozer.spec
+            sed -i 's/^package.name =.*/package.name = myapp/' buildozer.spec
+            sed -i 's/^package.domain =.*/package.domain = org.example/' buildozer.spec
+            sed -i 's/^android.api =.*/android.api = 33/' buildozer.spec
+            sed -i 's/^android.ndk =.*/android.ndk = 25b/' buildozer.spec
           fi
+          # 开始编译
           buildozer android debug
 
+      # 上传编译产物
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: APK
+          name: Android-APK
           path: bin/*.apk
